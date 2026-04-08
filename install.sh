@@ -302,20 +302,26 @@ EOF
         chmod +x "/etc/local.d/ciadpi.start"
     fi
 
-    if command -v rc-service >/dev/null 2>&1; then
-        rc-service ciadpi restart || {
-            log red "Ошибка запуска службы"
-            return 1
-        }
-    else
-        log yellow "Запускаем службу напрямую через init-скрипт..."
-        /etc/init.d/ciadpi start || {
-            log red "Не удалось запустить службу"
-            return 1
-        }
-    fi
-    log green "Служба добавлена в автозапуск и запущена"
-    return 0
+if command -v rc-service >/dev/null 2>&1; then
+    rc-service ciadpi stop >/dev/null 2>&1
+
+    rc-service ciadpi start || {
+        log red "Ошибка запуска службы"
+        return 1
+    }
+else
+    log yellow "Запускаем службу напрямую через init-скрипт..."
+
+    /etc/init.d/ciadpi stop >/dev/null 2>&1
+
+    /etc/init.d/ciadpi start || {
+        log red "Не удалось запустить службу"
+        return 1
+    }
+fi
+
+log green "Служба перезапущена и добавлена в автозапуск"
+return 0
 }
 
 # Тестирование конфигураций (Без systemd, прямой запуск в фоне)
