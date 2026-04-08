@@ -1,9 +1,9 @@
 #!/bin/bash
-
 # Глобальные константы
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 readonly SCRIPT_NAME=$(basename "$0")
 readonly LOG_FILE="/tmp/${SCRIPT_NAME}.log"
-readonly CONFIG_FILE="$HOME/.config/systemd/user/config.conf"
+readonly CONFIG_FILE="/etc/conf.d/ciadpi"
 readonly BYEDPI_DIR="$HOME/ciadpi"
 readonly TEMP_DIR=$(mktemp -d)
 readonly setup_repo="https://github.com/fatyzzz/Byedpi-Setup/archive/refs/heads/main.zip"
@@ -19,7 +19,6 @@ log() {
     local color=$1
     local message=$2
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    
     case $color in
         green) echo -e "${COLOR_GREEN}[INFO] $timestamp: $message${COLOR_RESET}" | tee -a "$LOG_FILE" ;;
         red)   echo -e "${COLOR_RED}[ERROR] $timestamp: $message${COLOR_RESET}" >&2 | tee -a "$LOG_FILE" ;;
@@ -28,22 +27,19 @@ log() {
     esac
 }
 
-
 # Функция безопасного создания директории
 safe_mkdir() {
     local dir_path=$1
-    
     if [[ -d "$dir_path" ]]; then
         log yellow "Директория $dir_path уже существует. Очистка..."
         rm -rf "$dir_path"
     fi
-    
     mkdir -p "$dir_path"
     log green "Создана директория: $dir_path"
 }
+
 safe_mkdir_no_rm() {
     local dir_path=$1
-    
     if [[ -d "$dir_path" ]]; then
         log yellow "Директория $dir_path уже существует."
     else
@@ -51,6 +47,7 @@ safe_mkdir_no_rm() {
         log green "Создана директория: $dir_path"
     fi
 }
+
 detect_distro() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
@@ -96,7 +93,6 @@ install_ubuntu() {
 install_other() {
     local packages=("$@")
     log yellow "Ваш дистрибутив ($DISTRO) не поддерживается напрямую."
-    
     if command -v zypper >/dev/null 2>&1; then
         su -c "zypper install -y ${packages[*]}"
     elif command -v dnf >/dev/null 2>&1; then
@@ -109,37 +105,51 @@ install_other() {
     fi
 }
 
-# Проверка и установка зависимостей
+# Проверка и установка зависимостей (Адаптировано под Alpine)
 check_dependencies() {
     detect_distro
-
     local dependencies=("gcc" "make" "unzip" "curl")
-    local missing=()
+    if [[ "$DISTRO" == "alpine" ]]; then
+        dependencies+=("openrc" "linux-headers" "openssl-dev" "zlib-dev" "build-base")
+    fi
 
+    local missing=()
     for dep in "${dependencies[@]}"; do
-        if ! command -v "$dep" &> /dev/null; then
-            missing+=("$dep")
+        if [[ "$DISTRO" == "alpine" ]] && command -v apk &> /dev/null; then
+            if ! apk info -e "$dep" &> /dev/null 2>&1; then
+                missing+=("$dep")
+            fi
+        else
+            if ! command -v "$dep" &> /dev/null; then
+                missing+=("$dep")
+            fi
         fi
     done
 
     if [ ${#missing[@]} -ne 0 ]; then
         log yellow "Не найдены необходимые зависимости: ${missing[*]}"
         case "$DISTRO" in
-            arch)
-                install_arch "${missing[@]}"
+            arch) install_arch "${missing[@]}" ;;
+            debian) install_debian "${missing[@]}" ;;
+            ubuntu) install_ubuntu "${missing[@]}" ;;
+            alpine)
+                log green "Обнаружен Alpine Linux. Устанавливаю пакеты через apk..."
+                su -c "apk update && apk add --no-cache ${missing[*]}" || {
+                    log red "Ошибка установки пакетов через apk"
+                    exit 1
+                }
+                log green "Установка зависимостей завершена."
                 ;;
-            debian)
-                install_debian "${missing[@]}"
-                ;;
-            ubuntu)
-                install_ubuntu "${missing[@]}"
-                ;;
-            *)
-                install_other "${missing[@]}"
-                ;;
+            *) install_other "${missing[@]}" ;;
         esac
     else
         log green "Все необходимые пакеты установлены."
+    fi
+
+    # Гарантируем наличие /sbin и /usr/sbin в PATH для работы rc-update/rc-service
+    if [[ "$DISTRO" == "alpine" ]]; then
+        [[ ":$PATH:" != *":/sbin:"* ]] && export PATH="/sbin:$PATH"
+        [[ ":$PATH:" != *":/usr/sbin:"* ]] && export PATH="/usr/sbin:$PATH"
     fi
 }
 
@@ -148,11 +158,8 @@ safe_download() {
     local url=$1
     local output=$2
     local cache_dir="/tmp/cache/byedpi"
-
     safe_mkdir "$cache_dir"
-
     local cache_file="$cache_dir/$(basename "$output")"
-
     if [[ -f "$cache_file" ]]; then
         log yellow "Используем кэшированную версию: $cache_file"
         cp "$cache_file" "$output"
@@ -166,16 +173,23 @@ safe_download() {
     fi
 }
 
-# Компиляция и установка ByeDPI
+# Компиляция и установка ByeDPI (Исправлено извлечение директории)
 install_byedpi() {
-    local repo_url="https://github.com/hufrea/byedpi/archive/refs/heads/main.zip"
-    local zip_file="$TEMP_DIR/byedpi-main.zip"
-
+    local repo_url="https://github.com/hufrea/byedpi/archive/refs/tags/v0.17.3.zip"
+    local zip_file="$TEMP_DIR/byedpi-release.zip"
     safe_download "$repo_url" "$zip_file"
-    
     unzip -q "$zip_file" -d "$TEMP_DIR"
-    cd "$TEMP_DIR/byedpi-main" || exit 1
-
+    
+    # Динамически находим извлечённую директорию (работает для веток и тегов)
+    local extracted_dir
+    extracted_dir=$(find "$TEMP_DIR" -maxdepth 1 -type d -name "byedpi-*" | head -n1)
+    
+    if [[ -z "$extracted_dir" || ! -d "$extracted_dir" ]]; then
+        log red "Не удалось найти извлечённую директорию в $TEMP_DIR"
+        exit 1
+    fi
+    
+    cd "$extracted_dir" || exit 1
     log yellow "Компиляция ByeDPI..."
     if make; then
         safe_mkdir "$BYEDPI_DIR"
@@ -190,15 +204,11 @@ install_byedpi() {
 # Загрузка и обработка списков
 fetch_configuration_lists() {
     local setup_zip="$TEMP_DIR/Byedpi-Setup-main.zip"
-
     safe_download "$setup_repo" "$setup_zip"
     unzip -q "$setup_zip" -d "$TEMP_DIR"
-
     cd "$TEMP_DIR/Byedpi-Setup-main/assets" || exit 1
-
     bash link_get.sh
-
-    # Отладка содержимого файлов
+    
     log yellow "Проверка файла settings.txt:"
     if [[ -f settings.txt ]]; then
         log green "Файл settings.txt существует"
@@ -206,7 +216,6 @@ fetch_configuration_lists() {
     else
         log red "Файл settings.txt не найден"
     fi
-
     log yellow "Проверка файла links.txt:"
     if [[ -f links.txt ]]; then
         log green "Файл links.txt существует"
@@ -214,7 +223,6 @@ fetch_configuration_lists() {
     else
         log red "Файл links.txt не найден"
     fi
-
     if [[ ! -f links.txt || ! -f settings.txt ]]; then
         log red "Не удалось создать конфигурационные файлы"
         exit 1
@@ -226,146 +234,126 @@ select_port() {
     local port
     read -p "Введите порт для Byedpi (по умолчанию 14228): " port
     port=${port:-14228}
-
     if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
         log red "Некорректный порт. Используется порт по умолчанию: 14228"
         port=14228
     fi
-
     echo "$port"
 }
 
 select_port_test() {
     local port_test
-    read -p "Введите порт для ТЕСТA! Byedpi (по умолчанию 10200): " port_test
-    port_test=${port_test:-10200}  # Здесь заменили "port" на "port_test"
-
+    read -p "Введите порт для ТЕСТА Byedpi (по умолчанию 10200): " port_test
+    port_test=${port_test:-10200}
     if [[ ! "$port_test" =~ ^[0-9]+$ || "$port_test" -lt 1024 || "$port_test" -gt 65535 ]]; then
         log red "Некорректный порт. Используется порт по умолчанию: 10200"
         port_test=10200
     fi
-
     echo "$port_test"
 }
 
-
-# Обновление конфигурации systemd и службы
+# Обновление конфигурации OpenRC и службы
 update_service() {
     local port=$1
     local setting=$2
-
-    # Проверка параметров
     if [[ -z "$port" ]] || [[ -z "$setting" ]]; then
         log red "Ошибка: не указан порт или настройки"
         return 1
     fi
+    
+    safe_mkdir_no_rm "/etc/conf.d"
+    {
+        echo "SEL_PORT=\"$port\""
+        echo "SEL_SETTINGS=\"$setting\""
+    } > "/etc/conf.d/ciadpi"
 
-    # Создаем конфигурационный файл
-    safe_mkdir_no_rm "$(dirname "$CONFIG_FILE")"
-    echo "$setting" > "$CONFIG_FILE"
-    # Создаем службу systemd
-    cat > "$HOME/.config/byedpi.conf" <<EOF
-SEL_PORT="$port"
-SEL_SETTINGS="$setting"
-EOF
-
-    cat > "$HOME/.config/systemd/user/ciadpi.service" <<EOF
-[Unit]
-Description=ByeDPI Proxy Service
-Documentation=https://github.com/fatyzzz/Byedpi-Setup
-Wants=network-online.target
-After=network-online.target nss-lookup.target
-
-[Service]
-EnvironmentFile=-%h/.config/byedpi.conf
-ExecStart=%h/ciadpi/ciadpi-core --ip 127.0.0.1 --port \$SEL_PORT \$SEL_SETTINGS
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=default.target
-EOF
-
-    # Перезагружаем конфигурацию systemd
-    systemctl --user daemon-reload
-
-    # Перезапускаем службу
-    systemctl --user restart ciadpi || {
-        log red "Ошибка запуска службы"
+    cat > "/etc/init.d/ciadpi" <<EOF
+#!/sbin/openrc-run
+description="ByeDPI Proxy Service"
+command="$HOME/ciadpi/ciadpi-core"
+command_args="--ip 127.0.0.1 --port \${SEL_PORT} \${SEL_SETTINGS}"
+command_background="yes"
+pidfile="/run/ciadpi.pid"
+depend() {
+    need net localmount
+    use dns
+}
+start_pre() {
+    if [ -z "\$SEL_PORT" ] || [ -z "\$SEL_SETTINGS" ]; then
+        eerror "Не заданы SEL_PORT или SEL_SETTINGS в /etc/conf.d/ciadpi"
         return 1
-    }
-    systemctl --user enable ciadpi 2>/dev/null
-    user_name=$(whoami)
-    loginctl enable-linger $user_name
-    log green "Служба добавлена в автозапуск"
+    fi
+}
+EOF
+    chmod +x "/etc/init.d/ciadpi"
+
+    if command -v rc-update >/dev/null 2>&1; then
+        rc-update add ciadpi default || {
+            log red "Ошибка добавления в автозапуск"
+            return 1
+        }
+    else
+        log yellow "rc-update не найден. Используем /etc/local.d для автозапуска..."
+        mkdir -p /etc/local.d
+        cat > "/etc/local.d/ciadpi.start" <<EOF
+#!/bin/sh
+$HOME/ciadpi/ciadpi-core --ip 127.0.0.1 --port $port $setting &
+EOF
+        chmod +x "/etc/local.d/ciadpi.start"
+    fi
+
+    if command -v rc-service >/dev/null 2>&1; then
+        rc-service ciadpi restart || {
+            log red "Ошибка запуска службы"
+            return 1
+        }
+    else
+        log yellow "Запускаем службу напрямую через init-скрипт..."
+        /etc/init.d/ciadpi start || {
+            log red "Не удалось запустить службу"
+            return 1
+        }
+    fi
+    log green "Служба добавлена в автозапуск и запущена"
     return 0
 }
 
+# Тестирование конфигураций (Без systemd, прямой запуск в фоне)
 test_configurations() {
     local port_test=$1
     log green "=== Начало тестирования ==="
     log green "Используемый порт: $port_test"
-
-    # Читаем настройки и домены в массивы сразу
     mapfile -t settings < <(grep -v '^[[:space:]]*$' settings.txt)
     mapfile -t links < <(grep -v '^[[:space:]]*$' links.txt)
-
     log yellow "Загружено настроек: ${#settings[@]}"
     log yellow "Загружено доменов: ${#links[@]}"
 
-    # Останавливаем службу
-    systemctl --user stop ciadpitest 2>/dev/null || true
+    # Останавливаем тестовые процессы, если остались
+    pkill -f "ciadpi-core.*--port $port_test" 2>/dev/null || true
 
     local -a results=()
-    local max_parallel=${#links[@]}  # Увеличиваем количество параллельных проверок
-    safe_mkdir_no_rm "$HOME/.config/systemd/user/"
-    # Перебираем настройки
+    local max_parallel=${#links[@]}
     local setting_number=1
+
     for setting in "${settings[@]}"; do
         [[ -z "$setting" ]] && continue
-        
         log yellow "================================================"
         log yellow "Тестирование настройки [$setting_number/${#settings[@]}]"
         log green "Настройка: $setting"
-        # Создаем службу
-        cat > "$HOME/.config/byedpitest.conf" <<EOF
-SEL_PORT="$port_test"
-SEL_SETTINGS="$setting"
-EOF
-        cat > "$HOME/.config/systemd/user/ciadpitest.service" <<EOF
-[Unit]
-Description=ByeDPI Proxy Service
-Documentation=https://github.com/fatyzzz/Byedpi-Setup
-Wants=network-online.target
-After=network-online.target nss-lookup.target
 
-[Service]
-EnvironmentFile=%h/.config/byedpitest.conf
-ExecStart=%h/ciadpi/ciadpi-core --ip 127.0.0.1 --port \$SEL_PORT \$SEL_SETTINGS
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=default.target
-EOF
-        log green "Запускаем службу..."
-        { systemctl --user daemon-reload && systemctl --user restart ciadpitest; } || {
-            log red "Ошибка запуска службы для настройки $setting, пропускаем..."
-            continue
-        }
-        
-
-        log yellow "Ожидание запуска службы..."
-        for i in {1..10}; do
-            if systemctl --user is-active --quiet ciadpitest; then
-            log green "Служба успешно запущена"
-            break
+        log green "Запускаем прокси в фоне для теста..."
+        "$BYEDPI_DIR/ciadpi-core" --ip 127.0.0.1 --port "$port_test" $setting &
+        local test_pid=$!
+        log yellow "Ожидание запуска прокси..."
+        for i in {1..5}; do
+            if kill -0 $test_pid 2>/dev/null; then
+                log green "Прокси успешно запущен (PID: $test_pid)"
+                break
             fi
             sleep 1
         done
-
-        if ! systemctl --user is-active --quiet ciadpitest; then
-            log red "Служба не запустилась для настройки $setting, пропускаем..."
+        if ! kill -0 $test_pid 2>/dev/null; then
+            log red "Прокси не запустился для настройки $setting, пропускаем..."
             continue
         fi
 
@@ -374,22 +362,17 @@ EOF
         local failed_links=()
         local temp_dir=$(mktemp -d)
         local -a pids=()
-        local -A domain_status=()  # Хэш для хранения статусов проверок
-        sleep 3
+        sleep 2
         log green "Начинаем параллельную проверку доменов..."
-        
-        # Запускаем проверку каждого домена в фоновом режиме
         local domain_number=1
         for link in "${links[@]}"; do
             [[ -z "$link" ]] && continue
             local https_link="https://$link"
-
             (
                 local http_code
                 http_code=$(curl -x socks5h://127.0.0.1:"$port_test" \
-                            -o /dev/null -s -w "%{http_code}" "$https_link" \
-                            --connect-timeout 2 --max-time 3) || http_code="000"
-
+                    -o /dev/null -s -w "%{http_code}" "$https_link" \
+                    --connect-timeout 2 --max-time 3) || http_code="000"
                 if [[ "$http_code" == "200" || "$http_code" == "404" || "$http_code" == "400" || "$http_code" == "405" || "$http_code" == "403" || "$http_code" == "302" || "$http_code" == "301" ]]; then
                     log green "  ✓ OK ($https_link: $http_code)"
                     echo "success" > "$temp_dir/result_$domain_number"
@@ -399,57 +382,40 @@ EOF
                 fi
             ) &
             pids+=($!)
-
             ((domain_number++))
-            
-            # Ограничиваем количество параллельных проверок
             if ((${#pids[@]} >= max_parallel)); then
                 wait "${pids[0]}" 2>/dev/null || true
                 pids=("${pids[@]:1}")
             fi
         done
-
-        # Ожидаем завершения всех проверок
         wait "${pids[@]}" 2>/dev/null || true
 
-        # Подсчитываем результаты через один проход по файлам
-        local result success_status link code
-        while IFS=: read -r result domain_num link code; do
+        for res_file in "$temp_dir"/result_*; do
+            [[ -f "$res_file" ]] || continue
+            local content=$(cat "$res_file")
             ((total_count++))
-            if [[ "$result" == "success" ]]; then
+            if [[ "$content" == "success" ]]; then
                 ((success_count++))
             else
-                failed_links+=("$link (код: $code)")
+                failed_links+=("${content#failure#}")
             fi
-        done < <(cat "$temp_dir"/result_* 2>/dev/null)
-
-        # Очищаем временные файлы
+        done
         rm -rf "$temp_dir"
 
-        log yellow "Останавливаем службу..."
-        systemctl --user stop ciadpitest 2>/dev/null || true
+        log yellow "Останавливаем тестовый прокси..."
+        kill $test_pid 2>/dev/null || true
+        wait $test_pid 2>/dev/null || true
 
         local success_rate=0
-        if [[ $total_count -gt 0 ]]; then
-            success_rate=$((success_count * 100 / total_count))
-        fi
-        
-        log yellow "Удаляем тестовую функцию"
-        rm $HOME/.config/systemd/user/ciadpitest.service
-        rm $HOME/.config/byedpitest.conf
-
+        [[ $total_count -gt 0 ]] && success_rate=$((success_count * 100 / total_count))
         results+=("$setting#$success_rate#$success_count#$total_count#${#failed_links[@]}")
-
         log green "Результаты для настройки [$setting_number/${#settings[@]}]:"
         log green "- Успешно: $success_count из $total_count ($success_rate%)"
         log yellow "- Неудачно: ${#failed_links[@]}"
-        
         log yellow "================================================"
         echo
         ((setting_number++))
     done
-
-    # Быстрый вывод результатов
     printf "RESULTS_START\n%s\nRESULTS_END\n" "$(printf '%s\n' "${results[@]}")"
 }
 
@@ -471,20 +437,23 @@ main() {
 ⠀⠀⠀⠀⣾⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⣧⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠀⠀⠀⠀⠀
 EOF
-    # Добавление текста
     echo -e "\e[36m"
-    echo "Byedpi-Setup"
+    echo "Byedpi-Setup (Alpine/OpenRC Edition)"
     echo "github.com/fatyzzz/Byedpi-Setup"
     echo -e "\e[0m"
     sleep 2
     check_dependencies
-    
-    trap ' 
-    log red "Скрипт прерван"; 
+
+    trap '
+    log red "Скрипт прерван";
     read -p "Вы хотите отключить службу ciadpi? (y/n): " choice
     if [[ $choice =~ ^[Yy]$ ]]; then
         log yellow "Отключение службы ciadpi..."
-        systemctl --user stop ciadpi 2>/dev/null || log red "Не удалось остановить службу."
+        if command -v rc-service >/dev/null 2>&1; then
+            rc-service ciadpi stop 2>/dev/null || log red "Не удалось остановить службу."
+        else
+            /etc/init.d/ciadpi stop 2>/dev/null || log red "Не удалось остановить службу."
+        fi
     else
         log green "Служба оставлена включенной."
     fi
@@ -494,21 +463,20 @@ EOF
     local port
     local selector
     local port_test
-
     echo
     log green "Выберите действие:"
     echo
     log yellow "1 - Установка ByeDPI"
     log yellow "2 - Только тестирование конфигурации"
-    log yellow "3 - Поменять порт у службы: "
+    log yellow "3 - Поменять порт у службы"
     read selector
-
     case "$selector" in
         "1")
-            if [[ -f $HOME/.config/systemd/user/ciadpi.service ]]; then
-                log yellow "Служба ciadpi уже запущена."
+            if [[ -f /etc/init.d/ciadpi ]]; then
+                log yellow "Служба ciadpi уже существует."
                 port_test=$(select_port_test)
-                port=$(grep -oP '(?<=SEL_PORT=")\d+(?=")' "$HOME/.config/byedpi.conf" 2>/dev/null || grep -oP '(?<=--port )\d+' "$HOME/.config/systemd/user/ciadpi.service")
+                port=$(sed -n 's/.*SEL_PORT="\([0-9]*\)".*/\1/p' /etc/conf.d/ciadpi 2>/dev/null)
+                [[ -z "$port" ]] && port=14228
             else
                 port=$(select_port)
                 port_test=$port
@@ -518,35 +486,23 @@ EOF
             port_test=$(select_port_test)
             ;;
         "3")
-            # Проверяем существование службы
-            if [[ ! -f $HOME/.config/systemd/user/ciadpi.service ]]; then
+            if [[ ! -f /etc/init.d/ciadpi ]]; then
                 log red "Служба ciadpi не найдена. Пожалуйста, выберите другое действие."
                 exit 1
             fi
-
             stop_service() {
-                systemctl --user stop ciadpi 2>/dev/null || true
+                if command -v rc-service >/dev/null 2>&1; then rc-service ciadpi stop 2>/dev/null || true
+                else /etc/init.d/ciadpi stop 2>/dev/null || true; fi
             }
-
             update_service_port() {
                 local new_port=$1
-
-                # Выключаем службу
                 stop_service
-
-                # Обновляем порты в файле службы
-                sed -i "s/--port [0-9]*/--port $new_port/" "$HOME/.config/systemd/user/ciadpi.service"
-
-                # Включаем службу с обновленными настройками
-                systemctl --user start ciadpi
+                sed -i "s/SEL_PORT=\"[0-9]*\"/SEL_PORT=\"$new_port\"/" "/etc/conf.d/ciadpi"
+                if command -v rc-service >/dev/null 2>&1; then rc-service ciadpi start
+                else /etc/init.d/ciadpi start; fi
             }
-
-            # Запросить новый порт от пользователя
-            new_port=$(select_port) # Здесь используем функцию выбора порта из предыдущего шага
-
-            # Обновляем порт в службе
+            new_port=$(select_port)
             update_service_port "$new_port"
-
             log green "Служба ciadpi успешно обновлена с новым портом: $new_port"
             exit 0
             ;;
@@ -555,18 +511,14 @@ EOF
             exit 1
             ;;
     esac
+
     log green "Начало установки ByeDPI"
     safe_mkdir "$TEMP_DIR"
     install_byedpi
     fetch_configuration_lists
-    
-    # Создаем временный файл для результатов
+
     local results_file=$(mktemp)
-    
-    # Запускаем тестирование и записываем результаты во временный файл,
-    # при этом отображая все логи в реальном времени
     test_configurations "$port_test" | tee "$results_file"
-    
     local -a test_results
     local capture=0
     while IFS= read -r line; do
@@ -579,8 +531,6 @@ EOF
             test_results+=("$line")
         fi
     done < "$results_file"
-
-    # Удаляем временный файл
     rm -f "$results_file"
 
     if [[ ${#test_results[@]} -eq 0 ]]; then
@@ -588,34 +538,24 @@ EOF
         exit 1
     fi
 
-    # Сортируем результаты по проценту успеха и длине настройки
     log yellow "Топ 10 конфигураций:"
     local -a sorted_results=()
     for result in "${test_results[@]}"; do
         IFS='#' read -r setting success_rate success_count total_count failed_count <<< "$result"
-        # Добавляем длину настройки как дополнительный критерий сортировки
         sorted_results+=("$success_rate:${#setting}:$result")
     done
 
-    # Сортируем по проценту успеха (по убыванию) и длине настройки (по возрастанию)
     local -a filtered_results=()
     while IFS=: read -r _ _ setting success_rate success_count total_count failed_count; do
         filtered_results+=("$setting#$success_rate#$success_count#$total_count#$failed_count")
     done < <(printf '%s\n' "${sorted_results[@]}" | sort -t: -k1,1nr -k2,2n | head -n 10)
 
-    # Выводим отсортированные результаты
     for i in "${!filtered_results[@]}"; do
         IFS='#' read -r setting success_rate success_count total_count failed_count <<< "${filtered_results[i]}"
-        
-        # Определяем цвет в зависимости от процента успеха
-        if ((success_rate >= 80)); then
-            color="${COLOR_GREEN}"
-        elif ((success_rate >= 50)); then
-            color="${COLOR_YELLOW}"
-        else
-            color="${COLOR_RED}"
+        if ((success_rate >= 80)); then color="${COLOR_GREEN}"
+        elif ((success_rate >= 50)); then color="${COLOR_YELLOW}"
+        else color="${COLOR_RED}"
         fi
-        
         echo -e "$i) ${color}$setting (Успех: $success_rate%, $success_count/$total_count, Неуспешно: $failed_count)${COLOR_RESET}"
     done
 
@@ -625,10 +565,9 @@ EOF
             log red "Некорректный выбор"
             exit 1
         fi
-
-        IFS='#' read -r selected_setting _ _ _ _ <<< "${filtered_results[selected_index]}"    
+        IFS='#' read -r selected_setting _ _ _ _ <<< "${filtered_results[selected_index]}"
         update_service "$port" "$selected_setting"
-        log green "Установка ByeDPI завершена. Служба ciadpi запущена от пользователя с настройкой: $selected_setting "
+        log green "Установка ByeDPI завершена. Служба ciadpi запущена с настройкой: $selected_setting"
         log yellow "Информация для подключения Socks5 прокси"
         log yellow "Айпи: 127.0.0.1"
         log yellow "Порт: $port"
@@ -636,9 +575,7 @@ EOF
         log green "t.me/fatyzzz"
     fi
 
-    # Очистка временных файлов
     rm -rf "$TEMP_DIR"
 }
 
-# Запуск основной функции
 main
