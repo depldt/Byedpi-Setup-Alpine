@@ -16,7 +16,10 @@ forked from **fatyzzz/Byedpi-Setup**
 Просто выполните следующую команду в терминале:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/depldt/Byedpi-Setup-Alpine/refs/heads/main/install.sh > install.sh && bash install.sh
+# установите зависимости
+apk add --no-cache bash gcc make cmake build-base linux-headers
+# скачайте и установите скрипт
+wget -qO- https://raw.githubusercontent.com/depldt/Byedpi-Setup-Alpine/431ade7cdee3d7bf800b0f3307d989acf49b8f2c/install.sh > install.sh && chmod +x install.sh && bash install.sh
 ```
 
 ## ℹ️ Информация
