@@ -6,7 +6,7 @@ readonly LOG_FILE="/tmp/${SCRIPT_NAME}.log"
 readonly CONFIG_FILE="/etc/conf.d/ciadpi"
 readonly BYEDPI_DIR="$HOME/ciadpi"
 readonly TEMP_DIR=$(mktemp -d)
-readonly setup_repo="https://github.com/fatyzzz/Byedpi-Setup/archive/refs/heads/main.zip"
+readonly setup_repo="https://github.com/depldt/Byedpi-Setup-Alpine/raw/refs/heads/main/assets/Byedpi-Setup-main.zip"
 
 # Проверка Docker (совместимо с cgroups v1/v2)
 is_docker() {
