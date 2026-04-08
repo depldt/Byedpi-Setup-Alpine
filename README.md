@@ -1,4 +1,4 @@
-# Byedpi-Setup 🚀
+# Byedpi-Setup 🚀 (адаптация для Alpine Linux (docker run -it --name my-alpine alpine /bin/sh))
 
 ## Описание проекта
 
@@ -16,7 +16,7 @@
 Просто выполните следующую команду в терминале:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/fatyzzz/Byedpi-Setup/refs/heads/main/install.sh > install.sh && bash install.sh
+wget -qO- https://raw.githubusercontent.com/depldt/Byedpi-Setup-Alpine/refs/heads/main/install.sh > install.sh && bash install.sh
 ```
 
 ## ℹ️ Информация
