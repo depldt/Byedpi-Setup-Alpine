@@ -1,5 +1,5 @@
 # Byedpi-Setup 🚀 (адаптация для Alpine Linux (docker run -it --name my-alpine alpine /bin/sh))
-
+forked from **fatyzzz/Byedpi-Setup**
 ## Описание проекта
 
 Этот скрипт автоматизирует установку и настройку ByeDPI - скрипта для ускорения замедленного GGC(Google Global Cache) и DGC(Discord Global Cache)
