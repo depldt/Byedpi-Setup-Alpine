@@ -7,7 +7,10 @@ readonly CONFIG_FILE="/etc/conf.d/ciadpi"
 readonly BYEDPI_DIR="$HOME/ciadpi"
 readonly TEMP_DIR=$(mktemp -d)
 readonly setup_repo="https://github.com/fatyzzz/Byedpi-Setup/archive/refs/heads/main.zip"
-
+# Проверка Docker
+is_docker() {
+    grep -q docker /proc/1/cgroup 2>/dev/null
+}
 # Цвета для логирования
 readonly COLOR_GREEN='\e[32m'
 readonly COLOR_RED='\e[31m'
@@ -301,24 +304,46 @@ $HOME/ciadpi/ciadpi-core --ip 127.0.0.1 --port $port $setting &
 EOF
         chmod +x "/etc/local.d/ciadpi.start"
     fi
+start_ciadpi() {
+    if is_docker; then
+        log yellow "Обнаружен Docker — запускаем без OpenRC"
 
-if command -v rc-service >/dev/null 2>&1; then
-    rc-service ciadpi stop >/dev/null 2>&1
+        pkill -f ciadpi >/dev/null 2>&1
 
-    rc-service ciadpi start || {
-        log red "Ошибка запуска службы"
-        return 1
-    }
-else
-    log yellow "Запускаем службу напрямую через init-скрипт..."
+        nohup ciadpi $CIADPI_ARGS >/var/log/ciadpi.log 2>&1 &
 
-    /etc/init.d/ciadpi stop >/dev/null 2>&1
+        sleep 1
 
-    /etc/init.d/ciadpi start || {
-        log red "Не удалось запустить службу"
-        return 1
-    }
-fi
+        if ! pgrep -f ciadpi >/dev/null; then
+            log red "Не удалось запустить ciadpi"
+            return 1
+        fi
+
+        log green "ciadpi запущен (Docker режим)"
+    else
+        log yellow "Используем OpenRC"
+
+        rc-service ciadpi stop >/dev/null 2>&1
+
+        rm -f /run/openrc/started/ciadpi 2>/dev/null
+        rm -f /run/openrc/starting/ciadpi 2>/dev/null
+
+        sleep 1
+
+        rc-service ciadpi start || {
+            log red "Ошибка запуска службы"
+            return 1
+        }
+
+        log green "Служба запущена через OpenRC"
+    fi
+
+    return 0
+}
+start_ciadpi || {
+    log red "Скрипт прерван"
+    exit 1
+}
 
 log green "Служба перезапущена и добавлена в автозапуск"
 return 0
