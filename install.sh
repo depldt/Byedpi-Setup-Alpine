@@ -180,10 +180,10 @@ fetch_configuration_lists() {
 }
 
 select_port() {
-    local port; read -p "Введите порт для Byedpi (по умолчанию 14228): " port
-    port=${port:-14228}
+    local port; read -p "Введите порт для Byedpi (по умолчанию 1080): " port
+    port=${port:-1080}
     if [[ ! "$port" =~ ^[0-9]+$ || "$port" -lt 1024 || "$port" -gt 65535 ]]; then
-        log red "Некорректный порт. Используется 14228"; port=14228
+        log red "Некорректный порт. Используется 1080"; port=1080
     fi
     echo "$port"
 }
@@ -394,7 +394,7 @@ EOF
                 log yellow "Служба уже существует."
                 port_test=$(select_port_test)
                 port=$(sed -n 's/.*SEL_PORT="\([0-9]*\)".*/\1/p' /etc/conf.d/ciadpi 2>/dev/null)
-                [[ -z "$port" ]] && port=14228
+                [[ -z "$port" ]] && port=1080
             else
                 port=$(select_port); port_test=$port
             fi ;;
